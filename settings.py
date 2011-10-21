@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 path = lambda *a: os.path.join(ROOT, *a)
 
 # Set the project version
-PROJECT_VERSION = "0.9.13.1"
+PROJECT_VERSION = "0.9.16.1"
 
 # TODO: This should be handled by prod in a settings_local.  By default, we
 # shouldn't be in prod mode
@@ -129,6 +129,8 @@ PYTHON_EXEC = 'python'
 # amo defaults
 XPI_AMO_PREFIX = "ftp://ftp.mozilla.org/pub/mozilla.org/addons/"
 
+
+LOWEST_APPROVED_SDK = "1.2.1"
 TEST_SDK = 'addon-sdk-1.0rc2'
 TEST_AMO_USERNAME = None
 TEST_AMO_PASSWORD = None

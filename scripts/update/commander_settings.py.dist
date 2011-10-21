@@ -1,0 +1,16 @@
+SRC_DIR = "/data/addons-dev/src/builder-addons-dev.allizom.org/flightdeck"
+WWW_DIR = "/data/addons-dev/www/builder-addons-dev.allizom.org/flightdeck"
+
+REMOTE_WSGI = "/data/www/builder-addons-dev.allizom.org/flightdeck/wsgi/flightdeck.wsgi"
+REMOTE_UPDATE_SCRIPT = "/data/bin/update-www.sh"
+
+CELERY_SERVICE_PREFIX = "celeryd-dev"
+
+UPDATE_REF = "origin/master"
+
+WEB_HOSTGROUP = "addons-dev"
+CELERY_HOSTGROUP = "addons-celery-dev"
+
+SSH_KEY = None
+
+CRON_NAME = "builder-addons-dev"
