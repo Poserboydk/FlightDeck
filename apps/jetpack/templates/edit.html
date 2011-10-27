@@ -1,5 +1,5 @@
 {% extends "base_fluid_width.html" %}
-{% load base_helpers %}
+
 
 {% block title %}Edit {{ revision }} - {% endblock %}
 
@@ -8,7 +8,7 @@
 	<link rel="stylesheet" href="/media/jetpack/css/FlightDeck.Autocomplete.css" type="text/css" media="screen" />
 	<link rel="stylesheet" href="/media/jetpack/css/tree.css" type="text/css" media="screen" />
 	<link rel="stylesheet" href="/media/jetpack/css/collapse.css" type="text/css" media="screen" />
-    {#}<link rel="stylesheet" href="/media/lib/bespin/BespinEmbedded.css" type="text/css" media="screen" />#}
+    {#<link rel="stylesheet" href="/media/lib/bespin/BespinEmbedded.css" type="text/css" media="screen" />#}
 	<script src="/media/jetpack/js/FlightDeck.Editor.js"></script>
 	<script src="/media/lib/ace/ace-uncompressed.js"></script>
 	<script src="/media/lib/ace/mode-javascript.js"></script>
@@ -42,19 +42,19 @@
 
 
 {# get package_info_form_template #}
-{% block app_settings %}
-	edit_package_info_template: '{% escape_template "_edit_package_info.html" %}',
-	library_autocomplete_url: '{% url jp_library_autocomplete %}',
+{% block app_settings %}	
+	edit_package_info_template: '{{ escape_template("_edit_package_info.html") }}',
+	library_autocomplete_url: '{{ url('jp_library_autocomplete') }}',
 {% endblock %}
 
 
-{% block create_init %}{% comment %}
+{% block create_init %}{#
 	create.init(
 		['create_addon'],
 		['addon'],
 		'app-body'
 	);
-{% endcomment %}{% endblock %}
+#}{% endblock %}
 
 {# switch off the footer #}
 {% block footer %}{% endblock %}
@@ -66,6 +66,7 @@
     <form id="app-sidebar-form">
 		<section id="modules">
 			<ul id="LibTree" class="tree collapse">
+				
 				
 			</ul>
 		</section>

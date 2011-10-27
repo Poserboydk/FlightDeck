@@ -17,7 +17,7 @@ from mock import Mock
 from nose.tools import eq_
 from utils.test import TestCase
 
-from base.templatetags.base_helpers import hashtag
+from base.helpers import hashtag
 from repackage.tasks import rebuild
 
 log = commonware.log.getLogger('f.repackage')
