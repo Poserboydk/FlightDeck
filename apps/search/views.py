@@ -89,9 +89,6 @@ def search(request):
     ctx.update(results)
     ctx.update(facets)
 
-    for p in results['addons']:
-        log.debug(p.__dict__)
-
     if request.is_ajax():
         template = 'ajax/' + template
     return _render(request, template, ctx)
