@@ -18,7 +18,7 @@
 			</li>
 			{#<li {% if page == "packages" %}class="active"{% endif %}><span><a title="Package Browser" href="{{ url('jp_browser_addons') }}">Package Browser</a></span></li>#}
 			<li><span><a title="Documentation" href="/docs/" target="new">Documentation</a></span></li>
-			{% if user.is_authenticated %}
+			{% if user.is_authenticated() %}
 				<li {% if page == "dashboard" %}class="active"{% endif %}>
 					<span>
 						<a title="My Account" href="{{ url('person_dashboard') }}">My Account</a>
