@@ -68,7 +68,6 @@ def get_activity_scale():
 ACTIVITY_CACHE_KEY = 'search:activity:average'
 
 def _get_average_activity():
-    return 0.2
     average = cache.get(ACTIVITY_CACHE_KEY)
     if average:
         return average
