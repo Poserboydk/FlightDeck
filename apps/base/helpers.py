@@ -36,17 +36,19 @@ for func in (addslashes, escapejs, fix_ampersands,
 
 @jinja2.contextfunction
 @register.function
-def querystring(context, query):
+def querystring(context, query, **params):
     """
     Add paramaters to a query string. New params will be appended, duplicates will
     be overwritten.
     """
     
     # separate querystring from route
-    url_parts = context['request'].get_full_path().split('?')
+    qs = []
+    if context != None :
+        url_parts = context['request'].get_full_path().split('?')
+        qs = url_parts[1].split('&') if len(url_parts) == 2 else []
     
-    #collect all querystring params
-    qs = url_parts[1].split('&') if len(url_parts) == 2 else []
+    #collect all querystring params    
     for i in query.split('&'):
         qs.append(i)
     
@@ -56,11 +58,13 @@ def querystring(context, query):
         parts = v.split('=')
         if( len(parts) == 2 ):
             query_dictionary[parts[0]] = parts[1]
-            
+    
+    query_dictionary.update(**params)
+    
     #convert dictionary to querystring with all params that have values
     qs = []
     for (k,v) in query_dictionary.items():
-        if len(v) > 0:
+        if v != None and len(v) > 0:
             qs.append( k+'='+urllib.quote(str(v)) )
             
     return '&'.join(sorted(qs))
@@ -122,7 +126,7 @@ def urlparams(url_, **query):
     Update the parameters of a url and return it.
     """
     url = urlparse.urlparse(url_)
-    query_string = querystring(url.query, **query)
+    query_string = querystring(None, url.query, **query)
     new = urlparse.ParseResult(url.scheme, url.netloc, url.path, url.params,
                                query_string, url.fragment)
     return new.geturl()
