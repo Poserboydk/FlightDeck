@@ -10,12 +10,12 @@ import zipfile
 
 #from mock import Mock
 from nose.tools import eq_
-from nose import SkipTest
+#from nose import SkipTest
 from utils.test import TestCase
 
 from django.conf import settings
 
-from base.templatetags.base_helpers import hashtag
+from base.helpers import hashtag
 from repackage.helpers import Repackage, increment_version
 
 log = commonware.log.getLogger('f.tests')
@@ -32,7 +32,8 @@ class RepackageTest(TestCase):
                 "sample_add-on-1.0b3.xpi",
                 "sample_add-on-1.0b4.xpi",
                 "sample_add-on-1.0rc2.xpi",
-                "repackage-special_name.xpi"]
+                "repackage-special_name.xpi",
+                "google_documents_viewer-0.10-fx.xpi"]
         self.sdk_source_dir = settings.REPACKAGE_SDK_SOURCE or os.path.join(
                 settings.ROOT, 'lib/addon-sdk-1.0rc2')
 
@@ -56,8 +57,12 @@ class RepackageTest(TestCase):
 
     def test_not_existing_location(self):
         rep = Repackage()
-        self.assertRaises(urllib2.HTTPError,
-                rep.download,
+        # different versions raise different exception
+        if hasattr(urllib2, 'URLError'):
+            exc = urllib2.URLError
+        else:
+            exc = urllib2.HTTPError
+        self.assertRaises(exc, rep.download,
                 'http://builder.addons.mozilla.org/wrong_file.xpi')
 
     def test_forcing_version(self):

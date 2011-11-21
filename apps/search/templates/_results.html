@@ -1,32 +1,42 @@
-{% load base_helpers %}
+
 <section id="SearchResults">
 {% if pager %}
     {% if type == 'addon' %}
-        <h2 class="UI_Heading">Add-on Results ({{ addon_total }})</h2>
+        <h2 class="UI_Heading">Add-on Results ({{ addon_total }})
     {% else %}
-        <h2 class="UI_Heading">Library Results ({{ library_total }})</h2>
+        <h2 class="UI_Heading">Library Results ({{ library_total }})
     {% endif %}
-
+	    <span class="UI_Sorting">Sort <select id="SortSelect">
+		<option value="activity" {{ select_selected('sort=activity') }}>Activity</option>
+		<option value="score" {{ select_selected('sort=score') }}>Score</option>
+		<option value="forked" {{ select_selected('sort=forked') }}>Forks</option>
+		{% if type == 'library' %}
+		    <option value="used" {{ select_selected('sort=used') }}>Uses</option>
+		{% endif %}
+		<option value="new" {{ select_selected('sort=new') }}>Newest</option>
+		<option value="size" {{ select_selected('sort=size') }}>Size</option>
+	    </select></span>
+	</h2>
     {% for package in pager.object_list %}
 			{% include "_package_result.html" %}
-	{% empty %}
+	{% else %}
 		<p>No results were found for the term "{{ query.q }}".</p>
 	{% endfor %}
 
-	{% if pager.has_other_pages %}
+	{% if pager.has_other_pages() %}
     <ul class="UI_Pagination">
-			{% if pager.has_previous %}
+			{% if pager.has_previous() %}
 				<li class="UI_Pagin_Action prev">
 					<span></span>
-					<a href="?{% querystring page=pager.previous_page_number %}">
+					<a href="?{{ querystring('page=%s' % pager.previous_page_number() ) }}">
 						Previous
 					</a>
 				</li>
 			{% endif %}
 			<li class='current'>{{ pager.number }}</li>
-			{% if pager.has_next %}
+			{% if pager.has_next() %}
 				<li class="UI_Pagin_Action next">
-                    <a href="?{% querystring page=pager.next_page_number %}">
+                    <a href="?{{ querystring('page=%s' % pager.next_page_number() ) }}">
 						Next
 					</a>
 					<span></span>

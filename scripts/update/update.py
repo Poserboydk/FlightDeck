@@ -11,6 +11,12 @@ import commander_settings as settings
 _src_dir = lambda *p: os.path.join(settings.SRC_DIR, *p)
 
 
+def manage_cmd(ctx, command):
+    """Call a manage.py command."""
+    with ctx.lcd(settings.SRC_DIR):
+        ctx.local("python2.6 manage.py %s" % command)
+
+
 @task
 def schematic(ctx):
     with ctx.lcd(settings.SRC_DIR):
@@ -41,9 +47,6 @@ def update_info(ctx, ref):
 @task
 def checkin_changes(ctx):
     ctx.local("/usr/bin/rsync -aq --exclude '.git*' --delete %s/ %s/" % (settings.SRC_DIR, settings.WWW_DIR))
-    with ctx.lcd(settings.WWW_DIR):
-        ctx.local('git add .')
-        ctx.local('git commit -q -a -m "push"')
 
 
 @task
@@ -72,6 +75,17 @@ def update_celery(ctx):
     ctx.remote("/sbin/service %s-bulk restart" % settings.CELERY_SERVICE_PREFIX)
 
 
+_shipyard_cmd = 'node ./media/lib/shipyard/bin/shipyard build %s -d ./media/jetpack/js/ide'
+
+
+@task
+def shipyard_min(ctx):
+    manage_cmd(ctx, 'cache_bust')
+    minify = '--non-minify' if getattr(settings, 'BUILDER_DEV', False) else '--minify'
+    with ctx.lcd(settings.SRC_DIR):
+        ctx.local(_shipyard_cmd % minify)
+
+
 @task
 def deploy(ctx):
     install_cron()
@@ -90,4 +104,10 @@ def pre_update(ctx, ref=settings.UPDATE_REF):
 
 @task
 def update(ctx):
+    with ctx.lcd(settings.SRC_DIR):
+        ctx.local("rm `find . -name '*.pyc'`")
     schematic()
+    shipyard_min()
+
+    # Run management commands like this:
+    # manage_cmd(ctx, 'cmd')

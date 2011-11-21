@@ -50,8 +50,8 @@ the first line is required::
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
-            'NAME': '',
-            'USER': '',
+            'NAME': 'flightdeck',
+            'USER': 'root',
             'PASSWORD': '',
             'HOST': '',
             'OPTIONS': {
@@ -74,28 +74,64 @@ the first line is required::
     CACHES['default']['BACKEND'] =
     'django.core.cache.backends.locmem.LocMemCache'
 
+Make sure that MySQL is running, then create the database you specified
+in settings_local.py::
+
+    mysql -u root -p
+
+    [MySQL messages snipped]
+
+    mysql> CREATE DATABASE flightdeck;
+    Query OK, 1 row affected (0.00 sec)
+
 If this is a brand new installation you'll need to configure a database as
 well.  This command will build the structure::
 
     ./manage.py syncdb
     
-If you're using Elastic Search locally then be sure to setup the ES index
-mappings and index all your packages
+If you're using Elastic Search locally (this is not necessary for basic functionality)
+then be sure to setup the ES index mappings and index all your packages::
 
     ./manage.py cron setup_mapping
     ./manage.py cron index_all
 
-FlightDeck needs to know about all the SDKs you have availalbe.  This command
-will make it look for them and initialize the database::
+FlightDeck needs to know about the SDKs you have available (in ./lib).  This command
+will make a single version of the SDK available in FlightDeck's Libraries selector::
 
-    ./manage.py add_core_lib jetpack-sdk-0.8
+    ./manage.py add_core_lib addon-sdk-1.2.1
 
 If you're writing code and would like to add some test data to the database
 you can load some fixtures::
 
     ./manage.py loaddata users packages
 
+Run the development server::
+
+    ./manage.py runserver
+
+In Firefox's about:config create a new string preference named 
+extensions.addonBuilderHelper.trustedOrigins with the value
+``https://builder.addons.mozilla.org/,http://127.0.0.1:8000/``;
+install the Add-on Builder Helper (if you had it already installed, 
+restart the browser after changing the preference)
+
+Navigate the browser to http://127.0.0.1:8000/, log in with the username
+and password you entered while running ``./manage.py syncdb``.
+
 You're all done!
+
+Building documentation
+----------------------
+
+FlightDeck uses `Sphinx <http://sphinx.pocoo.org/contents.html>`_-based documentation,
+so you have to install sphinx in order to build the docs::
+
+    pip install sphinx
+    make -C docs html
+
+.. note::
+    If you get ``ValueError: unknown locale: UTF-8``, run ``export LC_ALL=en_US.UTF-8``
+    before ``make``.
 
 Using Apache
 ------------
@@ -107,7 +143,9 @@ Using Apache
 Production environments will expect to be running through another webserver.
 Some example Apache configurations follow.
 
-An example Apache .conf::
+An example Apache .conf
+
+..code-block::
 
     <VirtualHost *:80>
         ServerAdmin your@mail.com
@@ -154,7 +192,10 @@ An example Apache .conf::
         WSGIScriptAlias / /path/to/FlightDeck/apache/config_local.wsgi
     </VirtualHost>
 
-An example Apache WSGI configuration::
+
+An example Apache WSGI configuration
+
+.. code-block:: python
 
     import sys
     import os
@@ -165,9 +206,9 @@ An example Apache WSGI configuration::
 
     # All directories which should on the PYTHONPATH
     ALLDIRS = [
-	    os.path.join(VIRTUAL_ENV, 'lib/python2.6/site-packages'),
-	    PROJECT_PATH,
-	    os.path.join(PROJECT_PATH, 'flightdeck'),
+        os.path.join(VIRTUAL_ENV, 'lib/python2.6/site-packages'),
+        PROJECT_PATH,
+        os.path.join(PROJECT_PATH, 'flightdeck'),
     ]
 
     # Remember original sys.path.
@@ -184,13 +225,13 @@ An example Apache WSGI configuration::
     # sys.path.append(workspace)
 
     for s in ALLDIRS:
-	    sys.path.append(s)
+        sys.path.append(s)
 
     # reorder sys.path so new directories from the addsitedir show up first
     new_sys_path = [p for p in sys.path if p not in prev_sys_path]
     for item in new_sys_path:
-	    sys.path.remove(item)
-	    sys.path[:0] = new_sys_path
+        sys.path.remove(item)
+        sys.path[:0] = new_sys_path
 
     os.environ['VIRTUAL_ENV'] = VIRTUAL_ENV
     os.environ['CUDDLEFISH_ROOT'] = VIRTUAL_ENV
@@ -202,24 +243,24 @@ An example Apache WSGI configuration::
 
 
 Recipes
-===============
+=======
 
 
 Import live database dump
 -------------------------
 
-How to import a database dump from live
+How to import a database dump from live::
 
     [sudo] mysql flightdeck < flightdeck_dump.sql
     
 If you run into an error when importing large sql dump files, you may need to
- restart your mysqld process with this parameter.  
+restart your mysqld process with this parameter::
 
     mysqld --max_allowed_packet=32M
     
 The database dump might be missing a row in django_sites table, so if you get a
 django error saying "Site matching query does not exist" when you hit the login
-page then insert a row into django_site.
+page then insert a row into django_site::
 
     insert into django_site (id,domain,name) values (1,'example.com','example')
     
@@ -229,7 +270,7 @@ After importing the data, you will need to rebuild your ES index.
 Rebuilding Elastic Search index
 -------------------------------
 
-Need to delete your Elastic Search index and start over?
+Need to delete your Elastic Search index and start over?::
 
     curl -XDELETE 'http://localhost:9201/flightdeck'
     ./manage.py cron setup_mapping
@@ -239,8 +280,50 @@ Need to delete your Elastic Search index and start over?
 Create a local super user account
 ---------------------------------
 
-If you imported your database then you will need to create a user.
+If you imported your database then you will need to create a user::
 
     ./manage.py createsuperuser
     
     
+Using with Celery
+-----------------
+
+Majority of resources heavy tasks is done by delegating them to celery.
+
+By default on development boxes celery is not running and tasks are run 
+synchronously. To be able to test celery tasks one has to configure the 
+development system to resemble the production one.
+
+Celery requires a running messaging system. We use 
+`RabbitMQ <http://www.rabbitmq.com/>`_.
+
+To configure please copy the Celery section from ``settings.py`` to 
+``settings_local.py`` and uncomment it.
+
+.. code-block:: python
+
+   # These settings are for if you have celeryd running
+   BROKER_HOST = 'localhost'
+   BROKER_PORT = 5672
+   BROKER_USER = 'builder'
+   BROKER_PASSWORD = 'builder'
+   BROKER_VHOST = 'builder'
+   BROKER_CONNECTION_TIMEOUT = 0.1
+   CELERY_RESULT_BACKEND = 'amqp'
+   CELERY_IGNORE_RESULT = True
+
+**RabbitMQ CheatSheet**
+
+Create user, virtual host and give user all privileges::
+
+    sudo rabbitmqctl add_user builder builder
+    sudo rabbitmqctl add_vhost builder
+    sudo rabbitmqctl set_permission -p builder builder ".*" ".*" ".*"
+
+
+From project directory run::
+
+    ./manage.py celeryd -l INFO
+
+
+.. _RabbitMQ: http://www.rabbitmq.com/

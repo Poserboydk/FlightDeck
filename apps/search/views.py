@@ -7,21 +7,31 @@ from django.template import RequestContext
 from jetpack.models import Package
 from .helpers import package_search, get_activity_scale
 from .forms import SearchForm
+from pyes.urllib3.connectionpool import TimeoutError
 
 log = commonware.log.getLogger('f.search')
 
+SORT_MAPPING = {
+    'score':'_score',
+    'activity':'-activity',
+    'forked':'-copies_count',
+    'used':'-times_depended',
+    'new':'-created_at',
+    'size':'-size',
+}
 
 def search(request):
     form = SearchForm(request.GET)
     form.is_valid()
     query = form.cleaned_data
-    q = query.get('q')
+    q = query.get('q').lower()
     type_ = query.get('type') or None
     types = {'a': 'addon', 'l': 'library'}
     page = query.get('page') or 1
     limit = 20
     activity_map = get_activity_scale()
-
+    
+    sort = SORT_MAPPING.get(query.get('sort'), '_score' if q else '-activity')
 
     filters = {}
     filters['user'] = request.user
@@ -44,16 +54,18 @@ def search(request):
 
     if query.get('activity'):
         filters['activity__gte'] = activity_map.get(str(query['activity']), 0)
-
-    results = {}
-    facets = {}
-
+         
     copies_facet = {'terms': {'field': 'copies_count'}}
     times_depended_facet = {'terms': {'field': 'times_depended'}}
     facets_ = {'copies': copies_facet, 'times_depended': times_depended_facet}
+   
+    template = ''
+    results={}
+    facets={}
+    
     if type_:
-        filters['type'] = type_
-        qs = package_search(q, **filters).facet(**facets_)
+        filters['type'] = type_        
+        qs = package_search(q, **filters).order_by(sort).facet(**facets_)                
         try:
             results['pager'] = Paginator(qs, per_page=limit).page(page)
         except EmptyPage:
@@ -63,16 +75,15 @@ def search(request):
         template = 'results.html'
     else:
         # combined view
-        results['addons'] = package_search(q, type='a', **filters).facet(
-                **facets_)[:5]
-        results['libraries'] = package_search(q, type='l', **filters).facet(
-                **facets_)[:5]
+        results['addons'] = package_search(q, type='a', **filters) \
+            .order_by(sort).facet(**facets_)[:5]
+        results['libraries'] = package_search(q, type='l', **filters) \
+            .order_by(sort).facet(**facets_)[:5] 
         facets = _facets(results['addons'].facets)
         facets['everyone_total'] = facets['combined_total']
         template = 'aggregate.html'
-
-
-
+    
+    
     ctx = {
         'q': q,
         'page': 'search',
@@ -80,9 +91,10 @@ def search(request):
         'query': query,
         'type': types.get(type_, None)
     }
+    
     ctx.update(results)
     ctx.update(facets)
-
+    
     if request.is_ajax():
         template = 'ajax/' + template
     return _render(request, template, ctx)

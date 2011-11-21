@@ -3,13 +3,11 @@ import re
 import csv
 import shutil
 import time
-import datetime
 import commonware
-import tarfile
 import tempfile
-import markdown
 import hashlib
 import codecs
+import waffle
 from decimal import Decimal, getcontext
 from copy import deepcopy
 
@@ -28,25 +26,26 @@ from django.db import connection
 
 from cuddlefish.preflight import vk_to_jid, jid_to_programid, my_b32encode
 from ecdsa import SigningKey, NIST256p
-from elasticutils import es_required
+from elasticutils import es_required, SearchMixin
 from pyes import djangoutils
 from pyes.exceptions import NotFoundException as PyesNotFoundException
 
 from statsd import statsd
 
-from amo.constants import *
+from amo import constants
 from base.models import BaseModel
 from jetpack.errors import (SelfDependencyException, FilenameExistException,
                             UpdateDeniedException, SingletonCopyException,
                             DependencyException, AttachmentWriteException)
 from jetpack.managers import PackageManager
-from search.models import SearchMixin
+
 from utils import validator
-from utils.exceptions import SimpleException
 from utils.helpers import pathify, alphanum, alphanum_plus
 from utils.os_utils import make_path
 from utils.amo import AMOOAuth
 from xpi import xpi_utils
+
+from elasticutils.utils import retry_on_timeout
 
 
 log = commonware.log.getLogger('f.jetpack')
@@ -157,7 +156,7 @@ class PackageRevision(BaseModel):
         """Find out if this revision has been uploaded successfuly to AMO
         """
         return (self.amo_version_name == self.get_version_name()
-                and self.amo_status != STATUS_UPLOAD_FAILED)
+                and self.amo_status != constants.STATUS_UPLOAD_FAILED)
 
     def get_amo_status_url(self):
         """:returns: (string) url to pull amo_status view
@@ -172,7 +171,7 @@ class PackageRevision(BaseModel):
     def get_status_name(self):
         """:returns: (string) the name of the AMO status or None
         """
-        return STATUS_NAMES.get(self.amo_status, None)
+        return constants.STATUS_NAMES.get(self.amo_status, None)
 
     def upload_to_amo(self, hashtag):
         """Uploads Package to AMO, updates or creates as a new Addon
@@ -187,7 +186,7 @@ class PackageRevision(BaseModel):
             # upload
             try:
                 amo_user_id = int(self.author.username)
-            except:
+            except Exception, err:
                 # this is not possible in live environment
                 amo_user_id = 1
             data = {'xpi': xpi_file,
@@ -198,7 +197,7 @@ class PackageRevision(BaseModel):
                            prefix=settings.AMOOAUTH_PREFIX)
             amo.set_consumer(consumer_key=settings.AMOOAUTH_CONSUMERKEY,
                              consumer_secret=settings.AMOOAUTH_CONSUMERSECRET)
-            error = None
+            iserror = None
             if self.package.amo_id:
                 # update addon on AMO
                 log.info('AMOOAUTHAPI: updating addon %s to version %s' % (
@@ -206,22 +205,30 @@ class PackageRevision(BaseModel):
                 try:
                     response = amo.create_version(data, self.package.amo_id)
                 except Exception, error:
+                    iserror = True
                     log.critical("AMOOAUTHAPI: Update failed, revision:"
                             " %s\n%s" % (self, str(error)))
-                    self.amo_status = STATUS_UPLOAD_FAILED
+                    self.amo_status = constants.STATUS_UPLOAD_FAILED
                     super(PackageRevision, self).save()
                 else:
                     log.debug("AMOOAUTHAPI: update response: %s " % response)
-                    # XXX: not supported by API yet
-                    # There is 'statuses', but it's unclear how to read that
-                    # https://bugzilla.mozilla.org/show_bug.cgi?id=690523
-                    if 'status' in response:
-                        self.amo_status = response['status']
+                    # TODO: change statuses of each file_id
+                    #       statuses contains the statuses for each file_id
+                    #       https://bugzilla.mozilla.org/show_bug.cgi?id=690523
+                    try:
+                        self.amo_status = response['statuses'][response['id']]
+                    except Exception, err:
+                        log.debug(response.get('statuses', str(err)))
+                        if 'status' in response:
+                            self.amo_status = response['status']
+                        else:
+                            self.amo_status = constants.STATUS_UNREVIEWED
                     else:
-                        self.amo_status = STATUS_UNREVIEWED
+                        log.debug('AMOOAUTHAPI: Status updated from API')
                     self.amo_file_id = response['id']
                     super(PackageRevision, self).save()
-                    # TODO: update jetpack ID if needed
+                    # TODO: update JID if updating an add-on which was
+                    #       uploaded before from an unknown source
             else:
                 # create addon on AMO
                 log.info('AMOOAUTHAPI: creating addon %s amo_version %s' % (
@@ -230,15 +237,15 @@ class PackageRevision(BaseModel):
                 try:
                     response = amo.create_addon(data)
                 except Exception, error:
+                    iserror = True
                     log.critical("AMOOAUTHAPI: Upload failed, revision:"
                             " %s\n%s" % (self, str(error)))
-                    self.amo_status = STATUS_UPLOAD_FAILED
+                    self.amo_status = constants.STATUS_UPLOAD_FAILED
                     super(PackageRevision, self).save()
                 else:
-                    log.debug("AMOOAUTHAPI: create response: %s " % response)
+                    log.debug(("AMOOAUTHAPI:"
+                               " response from create: %s " % response))
                     self.amo_status = response['status']
-                    # XXX: not supported by API (yet)
-                    # https://bugzilla.mozilla.org/show_bug.cgi?id=690515
                     if 'slug' in response:
                         self.package.amo_slug = response['slug']
                     super(PackageRevision, self).save()
@@ -246,7 +253,7 @@ class PackageRevision(BaseModel):
 
         self.package.save()
         os.remove(xpi_path)
-        if error:
+        if iserror and error:
             raise error
 
     ###############
@@ -268,9 +275,9 @@ class PackageRevision(BaseModel):
         try:
             # in FlightDeck, libraries can have the same name,
             # by different authors
-            Package.objects.get(author=revision.package.author,
-                                name=make_name(package_full_name))
-        except:
+            Package.objects.get(author=self.package.author,
+                                name=make_name(value))
+        except ObjectDoesNotExist:
             self.full_name = value
             self.package.full_name = value
             self.add_commit_message("Package name changed to \"%s\"" %
@@ -293,19 +300,15 @@ class PackageRevision(BaseModel):
             return False
 
         os.mkdir('%s/%s' % (package_dir, self.get_lib_dir()))
-        if not os.path.isdir('%s/%s' % (package_dir, self.get_data_dir())):
-            os.mkdir('%s/%s' % (package_dir, self.get_data_dir()))
+
+        data_dir = os.path.join(package_dir, settings.JETPACK_DATA_DIR)
+        if not os.path.isdir(data_dir):
+            os.mkdir(data_dir)
         return package_dir
 
     def get_lib_dir(self):
         " returns the name of the lib directory in SDK default - packages "
         return self.package.lib_dir or settings.JETPACK_LIB_DIR
-
-    def get_data_dir(self):
-        " returns the name of the data directory in SDK default - data "
-        # it stays as method as it could be saved in instance in the future
-        # TODO: YAGNI!
-        return settings.JETPACK_DATA_DIR
 
     def default_full_name(self):
         self.full_name = self.package.full_name
@@ -487,7 +490,7 @@ class PackageRevision(BaseModel):
 
     def get_dependencies_list(self, sdk=None):
         " returns a list of dependencies names extended by default core "
-        # XXX: breaking possibility to build jetpack SDK 0.6
+        # breaking possibility to build jetpack SDK 0.6
         deps = ["%s" % (dep.name) \
                      for dep in self.dependencies.all()]
         deps.append('api-utils')
@@ -506,11 +509,14 @@ class PackageRevision(BaseModel):
         " return description prepared for rendering "
         return "<p>%s</p>" % self.get_full_description().replace("\n", "<br/>")
 
-    def get_manifest(self, test_in_browser=False, sdk=None):
+    def get_manifest(self, test_in_browser=False, sdk=None,
+            package_overrides=None):
         " returns manifest dictionary "
         version = self.get_version_name()
         if test_in_browser:
             version = "%s - test" % version
+        if not package_overrides:
+            package_overrides = {}
 
         name = self.name
         #if not self.package.is_addon():
@@ -531,12 +537,21 @@ class PackageRevision(BaseModel):
             'contributors': self.get_contributors_list(),
             'lib': self.get_lib_dir()
         }
-
+        if (self.package.is_library()
+                and waffle.switch_is_active(
+                    'LibDirInMainAttributeWorkaround')):
+            manifest['main'] = "%s/%s" % (manifest['lib'], manifest['main'])
+            log.warning('Lib dir added to main attribute')
+        # override manifest with package_overrides
+        for key, value in manifest.items():
+            if value or package_overrides.get(key, None):
+                manifest[key] = package_overrides.get(key, None) or value
         return manifest
 
-    def get_manifest_json(self, sdk=None, **kwargs):
+    def get_manifest_json(self, sdk=None, package_overrides=None, **kwargs):
         " returns manifest as JSOIN object "
-        return simplejson.dumps(self.get_manifest(sdk=sdk, **kwargs))
+        return simplejson.dumps(self.get_manifest(sdk=sdk,
+            package_overrides=package_overrides, **kwargs))
 
     def get_main_module(self):
         " return executable Module "
@@ -661,7 +676,7 @@ class PackageRevision(BaseModel):
     def save(self, create_new_revision=True, **kwargs):
         """
         overloading save is needed to prevent from updating the same revision
-        use super(PackageRevision, self).save(**kwargs) if needed
+        use create_new_revision=False if needed
         """
         if self.id and create_new_revision:
             # create new revision
@@ -695,8 +710,8 @@ class PackageRevision(BaseModel):
         for dep in origin.dependencies.all():
             self.dependencies.add(dep)
 
-        for dir in origin.folders.all():
-            self.folders.add(dir)
+        for d in origin.folders.all():
+            self.folders.add(d)
 
         for mod in origin.modules.all():
             self.modules.add(mod)
@@ -843,34 +858,34 @@ class PackageRevision(BaseModel):
             self.folders.remove(folder)
         return ([mod.filename for mod in found_modules], empty_dirs_paths)
 
-    def folder_add(self, dir, save=True):
+    def folder_add(self, directory, save=True):
         " copy to new revision, add EmptyDir "
         errorMsg = ('Sorry, there is already a folder in your add-on '
                  'with the name "%s". Each folder in your add-on '
-                 'needs to have a unique name.') % dir.name
-        dir.clean()
+                 'needs to have a unique name.') % directory.name
+        directory.clean()
 
-        if not self.validate_folder_name(dir.name, dir.root_dir):
+        if not self.validate_folder_name(directory.name, directory.root_dir):
             raise FilenameExistException(errorMsg)
 
         # don't make EmptyDir for util/ if a file exists as util/example
-        elif (dir.root_dir == 'l' and
-            self.modules.filter(filename__startswith=dir.name).count()):
+        elif (directory.root_dir == 'l' and
+            self.modules.filter(filename__startswith=directory.name).count()):
             raise FilenameExistException(errorMsg)
-        elif (dir.root_dir == 'd' and
-            self.attachments.filter(filename__startswith=dir.name).count()):
+        elif (directory.root_dir == 'd' and
+            self.attachments.filter(filename__startswith=directory.name).count()):
             raise FilenameExistException(errorMsg)
 
-        self.add_commit_message('folder (%s) added' % dir.name)
+        self.add_commit_message('folder (%s) added' % directory.name)
         if save:
             self.save()
-        return self.folders.add(dir)
+        return self.folders.add(directory)
 
-    def folder_remove(self, dir):
+    def folder_remove(self, directory):
         " copy to new revision, remove folder "
-        self.add_commit_message('folder (%s) removed' % dir.name)
+        self.add_commit_message('folder (%s) removed' % directory.name)
         self.save()
-        return self.folders.remove(dir)
+        return self.folders.remove(directory)
 
     def update(self, change, save=True):
         " to update a module, new package revision has to be created "
@@ -1027,13 +1042,11 @@ class PackageRevision(BaseModel):
             self.attachments.remove(att)
         empty_dirs = self.folders.filter(dir_query)
         removed_empty_dirs = []
-        i = 0
         while empty_dirs:
             for folder in empty_dirs:
                 removed_empty_dirs.append(folder.name)
                 self.folders.remove(folder)
             empty_dirs = self.folders.filter(dir_query)
-            i += 1
         return self, removed_attachments, removed_empty_dirs
 
     def dependency_add(self, dep, save=True):
@@ -1202,7 +1215,7 @@ class PackageRevision(BaseModel):
                 'uid': a.get_uid,
                 'filename': escape(a.filename),
                 'author': escape(a.author.username),
-                'type': escape(a.ext),
+                'ext': escape(a.ext),
                 'get_url': reverse('jp_attachment', args=[a.get_uid])
                 } for a in self.attachments.all()
             ] if self.attachments.count() > 0 else []
@@ -1266,17 +1279,25 @@ class PackageRevision(BaseModel):
 
         return self.sdk.kit_lib if self.sdk.kit_lib else self.sdk.core_lib
 
-    def build_xpi(self, modules=[], attachments=[], hashtag=None, rapid=False,
-            tstart=None):
+    def build_xpi(self, modules=None, attachments=None, hashtag=None,
+            tstart=None, sdk=None, package_overrides=None):
         """
         prepare and build XPI for test only (unsaved modules)
 
         :param modules: list of modules from editor - potentially unsaved
-        :param rapid: if True - do not use celery to produce xpi
+        :param attachments: list of aatachments from editor - potentially
+                            unsaved
         :rtype: dict containing load xpi information if rapid else AsyncResult
 
         This method is called from cellery task
         """
+
+        if not package_overrides:
+            package_overrides = {}
+        if not modules:
+            modules = []
+        if not attachments:
+            attachments = []
         if self.package.type == 'l':
             log.error("Attempt to build xpi (%s), but package is not an "
                       "add-on. Expected (l) but got (%s)." % (
@@ -1291,22 +1312,23 @@ class PackageRevision(BaseModel):
         if not tstart:
             tstart = time.time()
 
-        # sdk_dir = self.get_sdk_dir(hashtag)
         sdk_dir = tempfile.mkdtemp()
-        sdk_source = self.sdk.get_source_dir()
+        if not sdk:
+            sdk = self.sdk
+        sdk_source = sdk.get_source_dir()
 
         # XPI: Copy files from NFS to local temp dir
         xpi_utils.sdk_copy(sdk_source, sdk_dir)
         t1 = (time.time() - tstart) * 1000
-        log.debug("[xpi:%s] SDK copied (time %dms)" % (hashtag, t1))
+        log.debug("[xpi:%s] SDK %s copied from %s (time %dms)" % (
+            hashtag, sdk.version, sdk_source, t1))
 
-        # TODO: check if it's still needed
-        self.export_keys(sdk_dir)
 
         packages_dir = os.path.join(sdk_dir, 'packages')
         package_dir = self.make_dir(packages_dir)
         # XPI: create manifest (from memory to local)
-        self.export_manifest(package_dir)
+        self.export_manifest(package_dir, sdk=sdk,
+                package_overrides=package_overrides)
 
         # export modules with ability to use edited code (from modules var)
         # XPI: memory/database to local
@@ -1325,7 +1347,7 @@ class PackageRevision(BaseModel):
 
         # export atts with ability to use edited code (from attachments var)
         # XPI: memory/database/NFS to local
-        data_dir = os.path.join(package_dir, self.get_data_dir())
+        data_dir = os.path.join(package_dir, settings.JETPACK_DATA_DIR)
         for att in self.attachments.all():
             att_edited = False
             for e_att in attachments:
@@ -1339,14 +1361,17 @@ class PackageRevision(BaseModel):
         log.debug("[xpi:%s] attachments exported (time %dms)" % (hashtag, t3))
 
         # XPI: copying to local from memory/db/files
-        self.export_dependencies(packages_dir, sdk=self.sdk)
+        self.export_dependencies(packages_dir, sdk=sdk)
         t4 = (time.time() - (t3 / 1000) - tstart) * 1000
         statsd.timing('xpi.build.dependencies', t4)
         log.debug("[xpi:%s] dependencies exported (time %dms)" % (hashtag, t4))
 
         # XPI: building locally and copying to NFS
+        options = sdk.options or ''
+        if waffle.switch_is_active('AddRevisionPkToXPI'):
+            options = '%s --harness-option builderVersion=%s' % (options, self.pk)
         return xpi_utils.build(sdk_dir, self.get_dir_name(packages_dir),
-                self.name, hashtag, tstart=tstart, options=self.sdk.options)
+                self.name, hashtag, tstart=tstart, options=options)
 
     def export_keys(self, sdk_dir):
         """Export private and public keys to file."""
@@ -1359,11 +1384,12 @@ class PackageRevision(BaseModel):
             f.write('private-key:%s\n' % self.package.private_key)
             f.write('public-key:%s' % self.package.public_key)
 
-    def export_manifest(self, package_dir, sdk=None):
+    def export_manifest(self, package_dir, sdk=None, package_overrides=None):
         """Creates a file with an Add-on's manifest."""
         manifest_file = "%s/package.json" % package_dir
         with codecs.open(manifest_file, mode='w', encoding='utf-8') as f:
-            f.write(self.get_manifest_json(sdk=sdk))
+            f.write(self.get_manifest_json(sdk=sdk,
+                package_overrides=package_overrides))
 
     def export_modules(self, lib_dir):
         """Creates a module file for each module."""
@@ -1389,7 +1415,7 @@ class PackageRevision(BaseModel):
         self.export_modules(
             os.path.join(package_dir, self.get_lib_dir()))
         self.export_attachments(
-            os.path.join(package_dir, self.get_data_dir()))
+            os.path.join(package_dir, settings.JETPACK_DATA_DIR))
 
     def export_files_with_dependencies(self, packages_dir, sdk=None):
         """Export dependency packages."""
@@ -1486,9 +1512,10 @@ class Package(BaseModel, SearchMixin):
     # Methods
 
     def save(self, **kwargs):
+        " save with finding a next id number "
         try:
             super(Package, self).save(**kwargs)
-        except IntegrityError, err:
+        except IntegrityError:
             if Package.objects.filter(id_number=self.id_number).exclude(pk=self.pk):
                 self.id_number = _get_next_id_number()
                 self.save(**kwargs)
@@ -1542,7 +1569,7 @@ class Package(BaseModel, SearchMixin):
         if not self.amo_slug:
             return ""
         return "%s://%s/en-US/firefox/addon/%s/" % (
-                settings.AMOAPI_PROTOCOL, settings.AMOAPI_DOMAIN,
+                settings.AMO_SITE_PROTOCOL, settings.AMO_SITE_DOMAIN,
                 self.amo_slug)
 
     def get_edit_on_amo_url(self, step=5):
@@ -1550,7 +1577,7 @@ class Package(BaseModel, SearchMixin):
         if not self.amo_slug:
             return ""
         return "%s://%s/en-US/firefox/developers/addon/%s/submit/%d" % (
-                settings.AMOAPI_PROTOCOL, settings.AMOAPI_DOMAIN,
+                settings.AMO_SITE_PROTOCOL, settings.AMO_SITE_DOMAIN,
                 self.amo_slug, step)
 
     def is_addon(self):
@@ -1701,10 +1728,10 @@ class Package(BaseModel, SearchMixin):
 
     def get_jid(self):
         jid = self.jid
-        if '@' in jid:
+        if jid and '@' in jid:
             return jid
         else:
-            return jid + '@jetpack'
+            return '%s@jetpack' % jid
 
     def create_revision_from_xpi(self, packed, manifest, author, jid,
             new_revision=False):
@@ -1809,7 +1836,9 @@ class Package(BaseModel, SearchMixin):
                 TO_DAYS(created_at) <= TO_DAYS(DATE_SUB(CURDATE(), INTERVAL {1} DAY)) AND
                 TO_DAYS(created_at) >= TO_DAYS(DATE_SUB(CURDATE(), INTERVAL {2} DAY))
                 group by package_id, TO_DAYS(created_at)) x
-                """.format(self.id,w['start'],w['end'],w['end']+1 - w['start'], idx))
+                """.format(
+                    self.id, w['start'], w['end'],
+                    w['end'] + 1 - w['start'], idx))
 
         query = " UNION ".join(q)
 
@@ -1840,14 +1869,17 @@ class Package(BaseModel, SearchMixin):
         # hack for ES, because a decimal is serialized as 'Decimal('0.302')'
         # so we must convert that to a float
         data['activity'] = float(self.activity_rating or 0.0)
+
         del data['activity_rating']
 
-        try:
-            if self.latest:
-                deps = self.latest.dependencies.all()
-                data['dependencies'] = [dep.package.id for dep in deps]
-        except PackageRevision.DoesNotExist:
-            pass
+        if self.latest:
+            deps = self.latest.dependencies.all()
+            data['dependencies'] = [dep.package.id for dep in deps]
+            size = 0
+            for m in self.latest.modules.all():
+                size += len(m.code)
+            data['size'] = size
+
 
         if self.is_library():
             data['times_depended'] = (Package.objects
@@ -1855,8 +1887,15 @@ class Package(BaseModel, SearchMixin):
                     .count())
 
         try:
-            es.index(data, settings.ES_INDEXES['default'], self._meta.db_table, id=self.id,
-                 bulk=bulk)
+                        
+            retries = getattr(settings, 'ES_RETRY', 0)
+            retry_wait = getattr(settings, "ES_RETRY_INTERVAL", 0)
+        
+            args = [data, settings.ES_INDEXES['default'],
+                    self._meta.db_table, self.id, bulk ]
+            
+            retry_on_timeout(es.index, args, retries, retry_wait)
+            
         except Exception, e:
             log.error("ElasticSearch errored for addon (%s): %s" % (self, e))
         else:
@@ -1873,8 +1912,15 @@ class Package(BaseModel, SearchMixin):
     @es_required
     def remove_from_index(self, es, bulk=False):
         try:
-            es.delete(settings.ES_INDEXES['default'], self._meta.db_table, id=self.id,
-                 bulk=bulk)
+
+            retries = getattr(settings, 'ES_RETRY', 0)
+            retry_wait = getattr(settings, "ES_RETRY_INTERVAL", 0)
+            
+            args = [settings.ES_INDEXES['default'], self._meta.db_table,
+                    self.id, bulk]
+            
+            retry_on_timeout(es.delete, args, retries, retry_wait)
+            
         except PyesNotFoundException:
             log.debug('Package %d tried to remove from index but was not found.'
                       % self.id)
@@ -1910,20 +1956,6 @@ class Module(BaseModel):
     def __unicode__(self):
         return '%s by %s (%s)' % (self.get_filename(),
                                   self.author, self.get_package_fullName())
-
-    def get_package(self):
-        " returns first package to which the module is assigned "
-        # TODO: Check if this method is used
-        try:
-            return self.revisions.all()[0].package
-        except Exception:
-            return None
-
-    def get_package_fullName(self):
-        " returns full name of the package to which the module is assigned "
-        # TODO: Check if this method is used
-        package = self.get_package()
-        return package.full_name if package else ''
 
     def get_path(self):
         """
@@ -2096,7 +2128,7 @@ class Attachment(BaseModel):
                 self.pk, str(err)))
             raise AttachmentWriteException(
                 'Attachment failed to save properly<br/>'
-                'Unknown unicode in file')
+                'Unknown Unicode in file')
 
 
     def export_code(self, static_dir):

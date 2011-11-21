@@ -6,7 +6,7 @@ repackage.tests.test_views
 import commonware
 import os
 import simplejson
-import tempfile
+#import tempfile
 
 from mock import Mock
 from nose.tools import eq_
@@ -15,7 +15,7 @@ from utils.test import TestCase
 from django.conf import settings
 from django.core.urlresolvers import reverse
 
-from jetpack.models import SDK, PackageRevision
+from jetpack.models import SDK  #, PackageRevision
 from repackage import tasks
 from jetpack.models import SDK
 
@@ -41,6 +41,7 @@ class RepackageViewsTest(TestCase):
                 "sample_add-on-1.0b4.xpi",
                 "sample_add-on-1.0rc2.xpi"]
         self.rebuild_url = reverse('repackage_rebuild')
+        self.rebuild_url_addons = reverse('repackage_rebuild_addons')
 
     def test_repackage_bad_request(self):
         # POST request is required
@@ -140,6 +141,7 @@ class RepackageViewsTest(TestCase):
                 'upload': f,
                 'version': 'test-sdk-{sdk_version}',
                 'secret': settings.AMO_SECRET_KEY})
+        eq_(response.status_code, 200)
         task_args = tasks.low_rebuild.delay.call_args
         eq_(task_args[1]['package_overrides']['version'], 'test-sdk-1.0')
 
@@ -161,6 +163,7 @@ class RepackageViewsTest(TestCase):
                 'version': 'test-sdk-{sdk_version}',
                 'secret': settings.AMO_SECRET_KEY,
                 'sdk_version': SDKVERSION})
+        eq_(response.status_code, 200)
         task_args = tasks.low_rebuild.delay.call_args
         eq_(task_args[0][2], sdk.get_source_dir())
 
@@ -179,3 +182,21 @@ class RepackageViewsTest(TestCase):
         log.debug(resp.content)
         data = simplejson.loads(resp.content)
         eq_(num_of_versions, len(data))
+
+    def test_bulk_repackage_addon(self):
+        tasks.low_rebuild.delay = Mock(return_value=None)
+        response = self.client.post(self.rebuild_url_addons, {
+            'sdk_version': 'test_version',
+            'addons': simplejson.dumps([
+                {'package_key': 1},
+                {'package_key': 2}]),
+            'secret': settings.AMO_SECRET_KEY})
+
+        eq_(response.status_code, 200)
+        content = simplejson.loads(response.content)
+        eq_(content['status'], 'success')
+        eq_(tasks.low_rebuild.delay.call_count, 2)
+        # is callback to the right test provided?
+        assert 'callback' in tasks.low_rebuild.delay.call_args[1]
+        # is sdk version provided?
+        eq_('test_version', tasks.low_rebuild.delay.call_args[0][2])

@@ -113,6 +113,7 @@ HOMEPAGE_PACKAGES_NUMBER = 3
 
 SDKDIR_PREFIX = tempfile.gettempdir()   # removed after xpi is created
 XPI_TARGETDIR = tempfile.gettempdir()   # target dir - in shared directory
+XULRUNNER_BINARY = '/usr/bin/xulrunner'
 
 LIBRARY_AUTOCOMPLETE_LIMIT = 20
 KEYDIR = 'keydir'
@@ -129,9 +130,8 @@ PYTHON_EXEC = 'python'
 # amo defaults
 XPI_AMO_PREFIX = "ftp://ftp.mozilla.org/pub/mozilla.org/addons/"
 
-
 LOWEST_APPROVED_SDK = "1.2.1"
-TEST_SDK = 'addon-sdk-1.0rc2'
+TEST_SDK = 'addon-sdk-1.2.1'
 TEST_AMO_USERNAME = None
 TEST_AMO_PASSWORD = None
 AUTH_DATABASE = None
@@ -159,6 +159,9 @@ AMOAPI_VERSION = "1.5"
 AMOAPI_PROTOCOL = "https"
 AMOAPI_DOMAIN = "services.addons.mozilla.org"
 AMOAPI_PORT = 443
+
+AMO_SITE_PROTOCOL = 'https'
+AMO_SITE_DOMAIN = 'addons.mozilla.org'
 
 URLOPEN_TIMEOUT = 4  # default timeout for urllib2.urlopen (seconds)
 
@@ -212,10 +215,25 @@ SESSION_COOKIE_NAME = "bamo_sessionid"
 
 # List of callables that know how to import templates from various sources.
 TEMPLATE_LOADERS = (
-    'django.template.loaders.filesystem.load_template_source',
-    'django.template.loaders.app_directories.load_template_source',
-    'django.template.loaders.eggs.load_template_source',
+    'jingo.Loader',
+    'django.template.loaders.filesystem.Loader',
+    'django.template.loaders.app_directories.Loader',
 )
+
+JINGO_EXCLUDE_APPS = [
+    'debug_toolbar'
+]
+
+JINJA_CONFIG = {'autoescape': False}
+
+def JINJA_CONFIG():
+    import jinja2
+    from django.conf import settings
+    config = {'extensions': ['jinja2.ext.do',
+                             'jinja2.ext.with_', 'jinja2.ext.loopcontrols'],
+              'finalize': lambda x: x if x is not None else ''}
+
+    return config
 
 MIDDLEWARE_CLASSES = [
     # Munging REMOTE_ADDR must come before ThreadRequest.
@@ -230,6 +248,7 @@ MIDDLEWARE_CLASSES = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'debug_toolbar.middleware.DebugToolbarMiddleware',
     'utils.cookies.HttpOnlyMiddleware',
+    'waffle.middleware.WaffleMiddleware',
     'commonware.middleware.FrameOptionsHeader',
     'commonware.middleware.HidePasswordOnException',
 ]
@@ -241,12 +260,14 @@ TEMPLATE_CONTEXT_PROCESSORS = (
     'base.context_processors.uri',
     'django.contrib.messages.context_processors.messages',
     'person.context_processors.profile',
+    'django.core.context_processors.request',
 )
 
 ROOT_URLCONF = 'urls'
 
 ADDONS_HELPER_URL = ('https://addons.mozilla.org/firefox/downloads/latest/'
                     '182410?src=external-builder')
+ADDONS_HELPER_VERSION = '1.2.2'
 
 TEMPLATE_DIRS = ()
 
@@ -295,6 +316,7 @@ INSTALLED_APPS = [
 
 # 3RD PARTY APPS
     'djcelery',
+    'waffle',
 ]
 
 # Which from above apps should be removed if in PRODUCTION
@@ -346,7 +368,9 @@ ES_DISABLED = True
 ES_INDEXES = {
     'default': 'flightdeck',
 }
-# ES_HOSTS = ['127.0.0.1:9201']
+ES_TIMEOUT = 5                  #timeout duration
+ES_RETRY = 2                    #times to retry on timeout
+ES_RETRY_INTERVAL = 0.25        #wait between attempts
 
 # Graphite reporting
 STATSD_HOST = "localhost"
@@ -365,3 +389,10 @@ CACHES = {
         'KEY_PREFIX': 'bamo',
     }
 }
+
+
+try:
+    from build import BUILD_ID
+except ImportError:
+    BUILD_ID = 'dev'
+

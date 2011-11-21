@@ -5,9 +5,10 @@ import shutil
 import simplejson
 import tempfile
 import time
+from waffle.models import Switch
 
 from mock import Mock
-from nose.tools import eq_
+#from nose.tools import eq_
 from utils.test import TestCase
 
 from django.contrib.auth.models import User
@@ -15,10 +16,11 @@ from django.conf import settings
 
 from jetpack.models import Module, Package, PackageRevision, SDK
 from xpi import xpi_utils
-from base.templatetags.base_helpers import hashtag
+from base.helpers import hashtag
 
 log = commonware.log.getLogger('f.tests')
 
+OLDXPIBUILD = xpi_utils.build
 
 class XPIBuildTest(TestCase):
 
@@ -50,8 +52,12 @@ class XPIBuildTest(TestCase):
                 settings.ROOT, 'apps/xpi/tests/sample_addons/')
         self.target_basename = os.path.join(
                 settings.XPI_TARGETDIR, self.hashtag)
+        self.backup_get_source_dir = SDK.get_source_dir
+        SDK.get_source_dir = Mock(return_value=os.path.join(
+            settings.ROOT, 'lib', settings.TEST_SDK))
 
     def tearDown(self):
+        xpi_utils.build = OLDXPIBUILD
         self.deleteCore()
         if os.path.exists(self.SDKDIR):
             shutil.rmtree(self.SDKDIR)
@@ -61,6 +67,7 @@ class XPIBuildTest(TestCase):
             os.remove('%s.xpi' % self.target_basename)
         if os.path.exists('%s.json' % self.target_basename):
             os.remove('%s.json' % self.target_basename)
+        SDK.get_source_dir = self.backup_get_source_dir
 
     def makeSDKDir(self):
         os.mkdir('%s/packages' % self.SDKDIR)
@@ -292,10 +299,21 @@ require('libCmodule');
         libB.latest.dependency_add(libC.latest)
         addon.latest.dependency_add(libB.latest)
         celery_eager = settings.CELERY_ALWAYS_EAGER
+        # if workaround is needed
+        # STDERR will be empty and XPI file doesn't exist
         settings.CELERY_ALWAYS_EAGER = False
         response = addon.latest.build_xpi(hashtag=self.hashtag)
-        settings.CELERY_ALWAYS_EAGER = celery_eager
+        assert response[0] and not response[1]
+        assert not os.path.isfile('%s.xpi' % self.target_basename)
+        # if workaround is working STDERR isn't empty and XPI is still
+        # not buillt
+        Switch.objects.create(name='SDKErrorInStdOutWorkaround',
+                              active=True)
+        response = addon.latest.build_xpi(hashtag=self.hashtag)
         assert response[1]
+        assert not os.path.isfile('%s.xpi' % self.target_basename)
+        settings.CELERY_ALWAYS_EAGER = celery_eager
+
 
     def test_addon_with_deep_dependency(self):
         # A > B, C
@@ -383,6 +401,40 @@ require('libDmodule');
         response = addon.latest.build_xpi(hashtag=self.hashtag)
         settings.CELERY_ALWAYS_EAGER = celery_eager
         assert not response[1]
+        assert os.path.isfile('%s.xpi' % self.target_basename)
+
+    def test_requiring_by_library_name(self):
+        # A depends on B
+        # so, you can do require('B'), and it should be B/lib/index.js
+
+        Switch.objects.create(name='LibDirInMainAttributeWorkaround',
+                              active=True)
+        addon = Package.objects.create(
+                author=self.author,
+                full_name='A',
+                name='a',
+                type='a')
+        mod = addon.latest.modules.get()
+        mod.code += """
+require('b');
+"""
+        addon.latest.update(mod)
+        # creating Library B
+        libB = Package.objects.create(
+                author=self.author,
+                full_name='B',
+                name='b',
+                type='l')
+        # now assigning dependencies
+        addon.latest.dependency_add(libB.latest)
+
+        celery_eager = settings.CELERY_ALWAYS_EAGER
+        settings.CELERY_ALWAYS_EAGER = False
+        response = addon.latest.build_xpi(hashtag=self.hashtag)
+        settings.CELERY_ALWAYS_EAGER = celery_eager
+        assert not response[1]
+        assert os.path.isfile('%s.xpi' % self.target_basename)
+
 
     def test_module_with_utf(self):
 
@@ -409,4 +461,11 @@ require('libDmodule');
         self.librev.dependency_add(packrev)
         self.addonrev.dependency_add(packrev)
         self.addonrev.dependency_add(self.librev)
-        self.addonrev.build_xpi(hashtag=self.hashtag, rapid=True)
+        self.addonrev.build_xpi(hashtag=self.hashtag)
+
+    def test_pk_in_harness(self):
+        xpi_utils.build = Mock()
+        Switch.objects.create(name='AddRevisionPkToXPI',
+                              active=True)
+        self.addonrev.build_xpi(hashtag=self.hashtag)
+        assert 'harness-option' in xpi_utils.build.call_args[1]['options']
